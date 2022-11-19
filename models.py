@@ -10,6 +10,8 @@ from keras.layers import (
     GlobalAveragePooling1D,
     Input,
     Dense,
+    Flatten,
+    Reshape,
     Dropout
     )
 from keras.optimizers import Adam
@@ -51,24 +53,34 @@ if __name__ == "__main__":
 
     n_stride = 2
 
-    sig_input = Input(shape=(sig_len, sig_dim)) # zeropadd input?
+    sig_input = Input(shape=(None, sig_dim)) # zeropadd input?
 
-    x = Conv1D(16, sz_kernel, activation='relu', padding='same')(sig_input)
-    x = MaxPooling1D(n_stride, padding='same')(x)
-    x = Conv1D(8, sz_kernel, activation='relu', padding='same')(x)
-    x = MaxPooling1D(n_stride, padding='same')(x)
-    x = Conv1D(8, sz_kernel, activation='relu', padding='same')(x)
-    encoded = MaxPooling1D(n_stride, padding='same')(x)
+    enc_conv1 = Conv1D(16, sz_kernel, activation='relu', padding='same')(sig_input)
+    enc_pool1 = MaxPooling1D(n_stride, padding='same')(enc_conv1)
 
+    enc_conv2 = Conv1D(8, sz_kernel, activation='relu', padding='same')(enc_pool1)
+    enc_pool2 = MaxPooling1D(n_stride, padding='same')(enc_conv2)
+
+    enc_conv3 = Conv1D(8, sz_kernel, activation='relu', padding='same')(enc_pool2)
+    #encoded = MaxPooling1D(n_stride, padding='same')(x)
     # at this point the representation is (4, 4, 8) i.e. 128-dimensional
+    enc_glob = GlobalAveragePooling1D()(enc_conv3)
+    enc_flat = Flatten()(enc_glob)
+    encoded = Dense(2, activation="relu")(enc_flat)
+    # at this point the representation is (2,) i.e. 2D
+    
+    dec_glob = Dense(enc_glob.shape[-1] * sig_dim)(encoded)
+    dec_flat = Reshape((enc_glob.shape[-1], sig_dim))(dec_glob)
 
-    x = Conv1D(8, sz_kernel, activation='relu', padding='same')(encoded)
-    x = UpSampling1D(n_stride)(x)
-    x = Conv1D(8, sz_kernel, activation='relu', padding='same')(x)
-    x = UpSampling1D(n_stride)(x)
-    x = Conv1D(16, sz_kernel, activation='relu')(x)
-    x = UpSampling1D(n_stride)(x)
-    decoded = Conv1D(1, sz_kernel, activation='sigmoid', padding='same')(x)
+    dec_conv3 = Conv1D(enc_conv3.shape[-1], sz_kernel, activation='relu', padding='same')(dec_flat)
+    dec_pool3 = UpSampling1D(n_stride)(dec_conv3)
+
+    dec_conv2 = Conv1D(enc_conv2.shape[-1], sz_kernel, activation='relu', padding='same')(dec_pool3)
+    dec_pool2 = UpSampling1D(n_stride)(dec_conv2)
+
+    dec_conv1 = Conv1D(enc_conv1.shape[-1], sz_kernel, activation='relu')(dec_pool2)
+    dec_pool1 = UpSampling1D(n_stride)(dec_conv1)
+    decoded = Conv1D(1, sz_kernel, activation='sigmoid', padding='same')(dec_pool1)
 
     autoencoder = Model(sig_input, decoded)
     autoencoder.compile(optimizer=Adam(), loss='binary_crossentropy')
