@@ -1,27 +1,34 @@
 import numpy as np
-
-from keras.models import Sequential
+import pandas as pd
 
 from keras.models import Model
 from keras.layers import (
     Conv1D,
     UpSampling1D,
     MaxPooling1D,
-    GlobalAveragePooling1D,
+    GlobalMaxPool1D,
     Input,
     Dense,
     Flatten,
     Reshape,
     Dropout,
-    Masking
+    BatchNormalization
     )
 from keras.optimizers import Adam
 from keras.callbacks import ReduceLROnPlateau, EarlyStopping
 #from keras.objectives import categorical_crossentropy
 
+from matplotlib import pyplot as plt
+
+
 class Autoencoder:
-    __n_filter_init = 8
+    __n_filter_init = 5
+    __early_stopping_after_n_epochs = 10
+    _steps_per_epoch = 5
+
+    __sig_len_before_global_pooling = None
     _encoder_input = None
+    _autoencoder = None
 
     def __init__(self, 
                  sig_len: int, 
@@ -49,18 +56,20 @@ class Autoencoder:
         assert compressed_dim > 0, f"Number of compressed dimension should be positive but was {compressed_dim}."
         self.compressed_dim = compressed_dim
 
-
     def get_encoder(self, build_model: bool = True):
         encoder_input = Input(shape=(self.sig_len, self.sig_dim))
         self._encoder_input = encoder_input
 
         encoder = encoder_input
         for i in range(self.n_layers):
-            n_filter_up = self.__n_filter_init * (2**i)
-            encoder = Conv1D(n_filter_up, self.kernel_sz, activation='relu', padding='same')(encoder)
-            encoder = MaxPooling1D(self.stride_sz, padding='same')(encoder)
+            n_filter_up = 2 ** (self.__n_filter_init + i)
+            encoder = Conv1D(n_filter_up, self.kernel_sz, activation="relu", padding="same")(encoder)
+            encoder = BatchNormalization()(encoder)
+            encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
+            if i == (self.n_layers // 2):
+                encoder = Dropout(rate=0.1)(encoder)
         self.__sig_len_before_global_pooling = encoder.shape[1]
-        encoder = GlobalAveragePooling1D()(encoder)
+        encoder = GlobalMaxPool1D()(encoder)
         encoder = Flatten()(encoder)
         encoder = Dense(self.compressed_dim, activation="relu")(encoder)
 
@@ -70,70 +79,93 @@ class Autoencoder:
         
         return encoder
     
-    def get_decoder(self, encoder = None):
+    def get_decoder(self, encoder=None):
         if encoder is None:
-            decoder_input = Input(shape=(self.compressed_dim))
+            decoder_input = Input(shape=self.compressed_dim)
         else:
             decoder_input = encoder
 
-        decoder = Reshape((1, -1))(decoder_input)
+        decoder = Reshape((self.sig_dim, -1))(decoder_input)
         decoder = UpSampling1D(self.__sig_len_before_global_pooling)(decoder)
-        n_filter_up_init = self.__n_filter_init * (2**self.n_layers)
         for i in range(self.n_layers):
-            n_filter_down = n_filter_up_init // (2**i)
-            decoder = Conv1D(n_filter_down, self.kernel_sz, activation='relu', padding="same")(decoder)
+            n_filter_down = 2 ** (self.__n_filter_init + self.n_layers - i)
+            decoder = Conv1D(n_filter_down, self.kernel_sz, activation="relu", padding="same")(decoder)
             decoder = UpSampling1D(self.stride_sz)(decoder)
-        decoder = Conv1D(self.sig_dim, self.kernel_sz, activation='sigmoid', padding='same')(decoder)
+        decoder = Conv1D(self.sig_dim, self.kernel_sz, activation="sigmoid", padding="same")(decoder)
         
         if encoder is None:
             decoder = Model(decoder_input, decoder)
             # TODO load weights
         return decoder
 
-    def get_autoencoder(self):
+    def build_autoencoder(self):
         encoder = self.get_encoder(build_model=False)
         decoder = self.get_decoder(encoder)
         autoencoder = Model(self._encoder_input, decoder)
         return autoencoder
 
+    @property
+    def autoencoder(self):
+        if self._autoencoder is None:
+            self._autoencoder = self.build_autoencoder()
+            print("build new autoencoder model")  # FIXME: for debugging
+        return self._autoencoder
+
+    # def _build_generator(self, data):
+    #     self._steps_per_epoch
+
+    def fit(self, data_tf, epochs: int = 100) -> pd.DataFrame:
+        # data_tf = tf.data.Dataset.from_tensor_slices(data.transpose())
+
+        model = self.autoencoder
+        model.compile(optimizer="adam",
+                            loss='mse')
+
+        callbacks = [EarlyStopping(monitor="val_loss",
+                                   patience=self.__early_stopping_after_n_epochs,
+                                   restore_best_weights=True,
+                                   ),
+                     ReduceLROnPlateau(monitor="val_loss",
+                                       factor=0.2,
+                                       patience=5,
+                                       min_lr=1e-7,
+                                       cooldown=2,
+                                       )
+                     ]
+
+        history = model.fit(x=data_tf,
+                            y=data_tf,
+                            epochs=epochs,
+                            steps_per_epoch=self._steps_per_epoch,
+                            callbacks=callbacks,
+                            validation_split=0.2,
+                            shuffle=False,  # FIXME: shuffle data
+                            )
+        self._autoencoder = model
+        return pd.DataFrame(history.history)
 
 
 if __name__ == "__main__":
     
-    sig_len_max = 112 # FIXME: doesn't work with all sizes
-    sig_dim = 2
+    sig_len_max = 128  # FIXME: doesn't work with all sizes
+    sig_dimension = 1
 
     # create toy data
     n_signals = 10
     
-    data = []
-    for i in range(n_signals):
-        sig_len = np.random.randint(low=90, high=sig_len_max)
-        data.append(np.random.random(size=(sig_len, sig_dim)))
-    # zeropadding
-    data_pad = []
-    for el in data:
-        sig_pad = np.concatenate((el, np.zeros(shape=(sig_len_max-el.shape[0], el.shape[1]))))
-        data_pad.append(sig_pad)
-    data_pad = np.stack(data_pad, axis=0)
+    data = (np.random.random((n_signals, sig_len_max)) +
+            np.asarray(list(np.arange(sig_len_max/8))*8).flatten())/(sig_len_max/8)
+    print(f"data.shape={data.shape}")
+    data = np.asarray(list(data) * 1000)
 
     # TODO: make input length variable
 
-    
+    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=5)
+    auto.fit(data)
 
-    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dim).get_autoencoder()
+    sig = data[0, :]
+    sig_prd = auto.autoencoder.predict(np.expand_dims(sig, 0))
 
-    auto.compile(optimizer=Adam(), loss='binary_crossentropy')
-
-
-    # history = autoencoder.fit(x=data_pad,
-    #                           y=data_pad,
-    #                           batch_size=5, 
-    #                           epochs=1000,
-    #                           callbacks=[ReduceLROnPlateau(monitor="loss"), 
-    #                                      EarlyStopping(monitor="loss", 
-    #                                                    patience=10,
-    #                                                    restore_best_weights=True
-    #                                                    )
-    #                                      ]
-    #                           )
+    plt.plot(sig, color="b")
+    plt.plot(sig_prd.flatten(), color="r")
+    plt.show()
