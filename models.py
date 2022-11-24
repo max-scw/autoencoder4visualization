@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from time import time
 
 from keras.models import Model
 from keras.layers import (
@@ -13,16 +14,13 @@ from keras.layers import (
     Reshape,
     Dropout,
     BatchNormalization
-    )
-from keras.optimizers import Adam
+)
 from keras.callbacks import ReduceLROnPlateau, EarlyStopping
-#from keras.objectives import categorical_crossentropy
 
 from matplotlib import pyplot as plt
 
 
 class Autoencoder:
-    __n_filter_init = 5
     __early_stopping_after_n_epochs = 10
     _steps_per_epoch = 5
 
@@ -30,13 +28,14 @@ class Autoencoder:
     _encoder_input = None
     _autoencoder = None
 
-    def __init__(self, 
-                 sig_len: int, 
+    def __init__(self,
+                 sig_len: int,
                  sig_dim: int = 1,
                  n_layers: int = 3,
                  kernel_sz: int = 3,
                  stride_sz: int = 2,
-                 compressed_dim: int = 2
+                 compressed_dim: int = 2,
+                 n_width: int = 4
                  ) -> None:
         assert sig_len > 0, f"Signal length should be positive but was {sig_len}."
         self.sig_len = sig_len
@@ -45,7 +44,7 @@ class Autoencoder:
         self.sig_dim = sig_dim
 
         assert n_layers > 0, f"Number of convolution layers should be positive but was {n_layers}."
-        self.n_layers = n_layers  
+        self.n_layers = n_layers
 
         assert kernel_sz > 0, f"Kernel size of the convolition should be positive but was {kernel_sz}."
         self.kernel_sz = kernel_sz
@@ -56,7 +55,10 @@ class Autoencoder:
         assert compressed_dim > 0, f"Number of compressed dimension should be positive but was {compressed_dim}."
         self.compressed_dim = compressed_dim
 
-    def get_encoder(self, build_model: bool = True):
+        assert compressed_dim > 1, f"Number of filters in first layer (i.e. the initial width) should be greater than one but was {n_width}."
+        self.__n_filter_init = n_width
+
+    def build_encoder(self, build_model: bool = True):
         encoder_input = Input(shape=(self.sig_len, self.sig_dim))
         self._encoder_input = encoder_input
 
@@ -64,7 +66,7 @@ class Autoencoder:
         for i in range(self.n_layers):
             n_filter_up = 2 ** (self.__n_filter_init + i)
             encoder = Conv1D(n_filter_up, self.kernel_sz, activation="relu", padding="same")(encoder)
-            encoder = BatchNormalization()(encoder)
+            # encoder = BatchNormalization()(encoder)
             encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
             if i == (self.n_layers // 2):
                 encoder = Dropout(rate=0.1)(encoder)
@@ -76,9 +78,9 @@ class Autoencoder:
         if build_model:
             encoder = Model(encoder_input, encoder)
             # TODO load weights
-        
+
         return encoder
-    
+
     def get_decoder(self, encoder=None):
         if encoder is None:
             decoder_input = Input(shape=self.compressed_dim)
@@ -92,14 +94,14 @@ class Autoencoder:
             decoder = Conv1D(n_filter_down, self.kernel_sz, activation="relu", padding="same")(decoder)
             decoder = UpSampling1D(self.stride_sz)(decoder)
         decoder = Conv1D(self.sig_dim, self.kernel_sz, activation="sigmoid", padding="same")(decoder)
-        
+
         if encoder is None:
             decoder = Model(decoder_input, decoder)
             # TODO load weights
         return decoder
 
     def build_autoencoder(self):
-        encoder = self.get_encoder(build_model=False)
+        encoder = self.build_encoder(build_model=False)
         decoder = self.get_decoder(encoder)
         autoencoder = Model(self._encoder_input, decoder)
         return autoencoder
@@ -115,24 +117,24 @@ class Autoencoder:
     #     self._steps_per_epoch
 
     def fit(self, data_tf, epochs: int = 100) -> pd.DataFrame:
-        # data_tf = tf.data.Dataset.from_tensor_slices(data.transpose())
-
         model = self.autoencoder
         model.compile(optimizer="adam",
-                            loss='mse')
+                      loss='mse')
 
         callbacks = [EarlyStopping(monitor="val_loss",
                                    patience=self.__early_stopping_after_n_epochs,
                                    restore_best_weights=True,
+                                   min_delta=1e-4
                                    ),
                      ReduceLROnPlateau(monitor="val_loss",
                                        factor=0.2,
                                        patience=5,
-                                       min_lr=1e-7,
+                                       min_lr=1e-6,
+                                       min_delta=1e-6,
                                        cooldown=2,
                                        )
                      ]
-
+        t1 = time()
         history = model.fit(x=data_tf,
                             y=data_tf,
                             epochs=epochs,
@@ -141,20 +143,21 @@ class Autoencoder:
                             validation_split=0.2,
                             shuffle=False,  # FIXME: shuffle data
                             )
+        dt = time() - t1
+        print(f"Training took {dt: 0.4} seconds.")
         self._autoencoder = model
         return pd.DataFrame(history.history)
 
 
 if __name__ == "__main__":
-    
     sig_len_max = 128  # FIXME: doesn't work with all sizes
     sig_dimension = 1
 
     # create toy data
     n_signals = 10
-    
+
     data = (np.random.random((n_signals, sig_len_max)) +
-            np.asarray(list(np.arange(sig_len_max/8))*8).flatten())/(sig_len_max/8)
+            np.asarray(list(np.arange(sig_len_max / 8)) * 8).flatten()) / (sig_len_max / 8)
     print(f"data.shape={data.shape}")
     data = np.asarray(list(data) * 1000)
 
