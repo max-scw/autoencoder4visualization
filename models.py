@@ -24,7 +24,7 @@ class Autoencoder:
     __early_stopping_after_n_epochs = 10
     _steps_per_epoch = 5
 
-    __sig_len_before_global_pooling = None
+    __shape_before_global_pooling = None
     _encoder_input = None
     _autoencoder = None
 
@@ -63,17 +63,28 @@ class Autoencoder:
         self._encoder_input = encoder_input
 
         encoder = encoder_input
+        encoder = Dropout(rate=0.1)(encoder)
+        print(f"encoder.shape={encoder.shape} (Dropout)")
         for i in range(self.n_layers):
             n_filter_up = 2 ** (self.__n_filter_init + i)
+
             encoder = Conv1D(n_filter_up, self.kernel_sz, activation="relu", padding="same")(encoder)
+            print(f"encoder.shape={encoder.shape} (Conv1D)")
             # encoder = BatchNormalization()(encoder)
+            # if i < (self.n_layers - 1):
             encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
+            print(f"encoder.shape={encoder.shape} (MaxPooling1D)")
             if i == (self.n_layers // 2):
                 encoder = Dropout(rate=0.1)(encoder)
-        self.__sig_len_before_global_pooling = encoder.shape[1]
+                print(f"encoder.shape={encoder.shape} (Dropout)")
+        self.__shape_before_global_pooling = encoder.shape[1:]
+
         encoder = GlobalMaxPool1D()(encoder)
+        print(f"encoder.shape={encoder.shape} (GlobalMaxPool1D)")
         encoder = Flatten()(encoder)
+        print(f"encoder.shape={encoder.shape} (Flatten)")
         encoder = Dense(self.compressed_dim, activation="relu")(encoder)
+        print(f"encoder.shape={encoder.shape} (Dense)")
 
         if build_model:
             encoder = Model(encoder_input, encoder)
@@ -87,12 +98,19 @@ class Autoencoder:
         else:
             decoder_input = encoder
 
-        decoder = Reshape((self.sig_dim, -1))(decoder_input)
-        decoder = UpSampling1D(self.__sig_len_before_global_pooling)(decoder)
+        decoder = Dense(self.__shape_before_global_pooling[-1])(decoder_input)
+        print(f"decoder.shape={decoder.shape} (Dense)")
+        decoder = Reshape((self.sig_dim, -1))(decoder)
+        print(f"decoder.shape={decoder.shape} (Reshape)")
+        decoder = UpSampling1D(self.__shape_before_global_pooling[0])(decoder)
+        print(f"decoder.shape={decoder.shape} (UpSampling1D)")
         for i in range(self.n_layers):
-            n_filter_down = 2 ** (self.__n_filter_init + self.n_layers - i)
+            n_filter_down = 2 ** (self.__n_filter_init + self.n_layers - i -1)
             decoder = Conv1D(n_filter_down, self.kernel_sz, activation="relu", padding="same")(decoder)
+            print(f"decoder.shape={decoder.shape} (Conv1D)")
             decoder = UpSampling1D(self.stride_sz)(decoder)
+            print(f"decoder.shape={decoder.shape} (UpSampling1D)")
+        # cost function
         decoder = Conv1D(self.sig_dim, self.kernel_sz, activation="sigmoid", padding="same")(decoder)
 
         if encoder is None:
