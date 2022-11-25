@@ -5,6 +5,7 @@ from time import time
 from keras.models import Model
 from keras.layers import (
     Conv1D,
+    Conv1DTranspose,
     UpSampling1D,
     MaxPooling1D,
     GlobalMaxPool1D,
@@ -59,35 +60,33 @@ class Autoencoder:
         self.__n_filter_init = n_width
 
     def build_encoder(self, build_model: bool = True):
-        encoder_input = Input(shape=(self.sig_len, self.sig_dim))
-        self._encoder_input = encoder_input
+        self._encoder_input = Input(shape=(self.sig_len, self.sig_dim))
 
-        encoder = encoder_input
+        encoder = self._encoder_input
         encoder = Dropout(rate=0.1)(encoder)
-        print(f"encoder.shape={encoder.shape} (Dropout)")
+        print(f"encoder.shape={encoder.shape} (input)")
         for i in range(self.n_layers):
             n_filter_up = 2 ** (self.__n_filter_init + i)
 
             encoder = Conv1D(n_filter_up, self.kernel_sz, activation="relu", padding="same")(encoder)
             print(f"encoder.shape={encoder.shape} (Conv1D)")
             # encoder = BatchNormalization()(encoder)
-            # if i < (self.n_layers - 1):
-            encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
-            print(f"encoder.shape={encoder.shape} (MaxPooling1D)")
+            #encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
+            #print(f"encoder.shape={encoder.shape} (MaxPooling1D)")
+            encoder = Conv1D(n_filter_up, 1, strides=self.stride_sz, padding="same")(encoder)
+            print(f"encoder.shape={encoder.shape} (Conv1D stride)")
             if i == (self.n_layers // 2):
                 encoder = Dropout(rate=0.1)(encoder)
-                print(f"encoder.shape={encoder.shape} (Dropout)")
         self.__shape_before_global_pooling = encoder.shape[1:]
-
-        encoder = GlobalMaxPool1D()(encoder)
-        print(f"encoder.shape={encoder.shape} (GlobalMaxPool1D)")
+        # encoder = GlobalMaxPool1D()(encoder)
+        # print(f"encoder.shape={encoder.shape} (GlobalMaxPool1D)")
         encoder = Flatten()(encoder)
         print(f"encoder.shape={encoder.shape} (Flatten)")
         encoder = Dense(self.compressed_dim, activation="relu")(encoder)
         print(f"encoder.shape={encoder.shape} (Dense)")
 
         if build_model:
-            encoder = Model(encoder_input, encoder)
+            encoder = Model(self._encoder_input, encoder)
             # TODO load weights
 
         return encoder
@@ -98,20 +97,23 @@ class Autoencoder:
         else:
             decoder_input = encoder
 
-        decoder = Dense(self.__shape_before_global_pooling[-1])(decoder_input)
+        decoder = Dense(np.prod(self.__shape_before_global_pooling))(decoder_input)
         print(f"decoder.shape={decoder.shape} (Dense)")
-        decoder = Reshape((self.sig_dim, -1))(decoder)
+        decoder = Reshape(self.__shape_before_global_pooling)(decoder)
         print(f"decoder.shape={decoder.shape} (Reshape)")
-        decoder = UpSampling1D(self.__shape_before_global_pooling[0])(decoder)
-        print(f"decoder.shape={decoder.shape} (UpSampling1D)")
+        # decoder = UpSampling1D(self.__shape_before_global_pooling[0])(decoder)
+        # print(f"decoder.shape={decoder.shape} (UpSampling1D)")
         for i in range(self.n_layers):
-            n_filter_down = 2 ** (self.__n_filter_init + self.n_layers - i -1)
+            n_filter_down = 2 ** (self.__n_filter_init + self.n_layers - i - 1)
+
             decoder = Conv1D(n_filter_down, self.kernel_sz, activation="relu", padding="same")(decoder)
             print(f"decoder.shape={decoder.shape} (Conv1D)")
-            decoder = UpSampling1D(self.stride_sz)(decoder)
-            print(f"decoder.shape={decoder.shape} (UpSampling1D)")
-        # cost function
+            #decoder = UpSampling1D(self.stride_sz)(decoder)
+            #print(f"decoder.shape={decoder.shape} (UpSampling1D)")
+            decoder = Conv1DTranspose(n_filter_down, self.kernel_sz, strides=self.stride_sz, activation="relu", padding="same")(decoder)
+            print(f"decoder.shape={decoder.shape} (Conv1DTranspose)")
         decoder = Conv1D(self.sig_dim, self.kernel_sz, activation="sigmoid", padding="same")(decoder)
+        print(f"decoder.shape={decoder.shape} (Conv1D)")
 
         if encoder is None:
             decoder = Model(decoder_input, decoder)
@@ -121,8 +123,30 @@ class Autoencoder:
     def build_autoencoder(self):
         encoder = self.build_encoder(build_model=False)
         decoder = self.get_decoder(encoder)
+        #decoder = self.build_autoencoder_dense()
         autoencoder = Model(self._encoder_input, decoder)
         return autoencoder
+
+    def build_autoencoder_dense(self):
+        self._encoder_input = Input(shape=(self.sig_len, ))
+        encoder = self._encoder_input
+
+        for i in range(self.n_layers):
+            n_neurons_down = 2 ** (self.__n_filter_init - i)
+            encoder = Dense(n_neurons_down, activation="relu")(encoder)
+            print(f"encoder.shape={encoder.shape} (Dense)")
+        encoder = Dense(self.compressed_dim, activation="relu")(encoder)
+        print(f"encoder.shape={encoder.shape} (Dense)")
+
+        decoder = encoder
+        for i in range(self.n_layers):
+            n_neurons_up = 2 ** (self.__n_filter_init - self.n_layers + 1 + i)
+            decoder = Dense(n_neurons_up, activation="relu")(decoder)
+            print(f"decoder.shape={decoder.shape} (Dense)")
+        decoder = Dense(self.encoder_input.shape[1], activation="sigmoid")(decoder)
+        print(f"decoder.shape={decoder.shape} (Dense)")
+        return decoder
+
 
     @property
     def autoencoder(self):
@@ -137,7 +161,8 @@ class Autoencoder:
     def fit(self, data_tf, epochs: int = 100) -> pd.DataFrame:
         model = self.autoencoder
         model.compile(optimizer="adam",
-                      loss='mse')
+                      loss='mse',
+                      metrics=['accuracy'])
 
         callbacks = [EarlyStopping(monitor="val_loss",
                                    patience=self.__early_stopping_after_n_epochs,
@@ -172,16 +197,16 @@ if __name__ == "__main__":
     sig_dimension = 1
 
     # create toy data
-    n_signals = 10
+    n_signals = 1000
 
     data = (np.random.random((n_signals, sig_len_max)) +
+            np.arange(sig_len_max) / (sig_len_max/4) +
             np.asarray(list(np.arange(sig_len_max / 8)) * 8).flatten()) / (sig_len_max / 8)
     print(f"data.shape={data.shape}")
-    data = np.asarray(list(data) * 1000)
 
     # TODO: make input length variable
 
-    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=5)
+    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3)
     auto.fit(data)
 
     sig = data[0, :]
