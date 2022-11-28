@@ -19,8 +19,15 @@ from keras.layers import (
     BatchNormalization
 )
 from keras.callbacks import ReduceLROnPlateau, EarlyStopping
+import keras.backend as K
 
 from matplotlib import pyplot as plt
+
+
+def count_model_parameters(model: Model) -> Tuple[int, int]:
+    trainable_count = np.sum([K.count_params(w) for w in model.trainable_weights])
+    non_trainable_count = np.sum([K.count_params(w) for w in model.non_trainable_weights])
+    return int(trainable_count), int(non_trainable_count)
 
 
 class Autoencoder:
@@ -70,6 +77,13 @@ class Autoencoder:
 
         assert self.__match_model_type(model_type), f"Unknown model type '{model_type}'."
         self._model_type = self.__match_model_type(model_type)
+
+    @property
+    def num_params(self) -> Union[None, Tuple[int, int]]:
+        if self._autoencoder:
+            return count_model_parameters(self._autoencoder)
+        else:
+            return None
 
     def __match_model_type(self, model_type: str) -> Union[str, None]:
         for ky, val in self.__model_types.items():
@@ -189,7 +203,8 @@ class Autoencoder:
     def autoencoder(self):
         if self._autoencoder is None:
             self._autoencoder = self.build_autoencoder()
-            print("build new autoencoder model")
+            n_trainable, n_non_trainable = self.num_params
+            print(f"Build new autoencoder model with {n_trainable}/{n_non_trainable} trainable parameters.")
         return self._autoencoder
 
     def fit(self, data_tf, epochs: int = 100) -> pd.DataFrame:
