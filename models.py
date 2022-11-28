@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import re
 from time import time
-from typing import Union
+from typing import Union, Tuple
 
 from keras.models import Model
 from keras.layers import (
@@ -35,7 +35,7 @@ class Autoencoder:
                      "fullyCNN": r"(fully?[\s\t\-]?CNN)|(CNN[\s\t\-]?full)",
                      "FCN": r"(FCN)|(Dense)",
                      "LSTM": r"LSTM"
-                     }    
+                     }
 
     def __init__(self,
                  sig_len: int,
@@ -68,7 +68,7 @@ class Autoencoder:
         assert compressed_dim > 1, f"Number of filters in first layer (i.e. the initial width) should be greater than one but was {n_width}."
         self.__n_filter_init = n_width
 
-        assert self.__match_model_type(model_type), f"Unknown model type '{self._model_type}'."
+        assert self.__match_model_type(model_type), f"Unknown model type '{model_type}'."
         self._model_type = self.__match_model_type(model_type)
 
     def __match_model_type(self, model_type: str) -> Union[str, None]:
@@ -76,7 +76,7 @@ class Autoencoder:
             if re.match(val, model_type, re.IGNORECASE):
                 return ky
         return None
-        
+
     def build_encoder(self, build_model: bool = True):
         self._encoder_input = Input(shape=(self.sig_len, self.sig_dim))
 
@@ -87,23 +87,27 @@ class Autoencoder:
         encoder = Dropout(rate=0.1)(encoder)
         print(f"encoder.shape={encoder.shape} (input)")
         # hidden layers
+        n_filter = self.__n_filter_init
         for i in range(self.n_layers):
-            n_filter_up = 2 ** (self.__n_filter_init + i)
+            if i <= self.n_layers / 2:
+                n_filter += 1
+            else:
+                n_filter -= 1
+            n_neurons = 2 ** (self.__n_filter_init + i)
 
             if self._model_type == "CNN":
-                encoder = Conv1D(n_filter_up, self.kernel_sz, activation="relu", padding="same")(encoder)
+                encoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(encoder)
                 print(f"encoder.shape={encoder.shape} (Conv1D)")
                 encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
                 print(f"encoder.shape={encoder.shape} (MaxPooling1D)")
             elif self._model_type == "fullyCNN":
-                encoder = Conv1D(n_filter_up, self.kernel_sz, activation="relu", padding="same")(encoder)
+                encoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(encoder)
                 print(f"encoder.shape={encoder.shape} (Conv1D)")
-                encoder = Conv1D(n_filter_up, 1, strides=self.stride_sz, padding="same")(encoder)
+                encoder = Conv1D(n_neurons, 1, strides=self.stride_sz, padding="same")(encoder)
                 print(f"encoder.shape={encoder.shape} (Conv1D stride)")
 
             elif self._model_type == "FCN":
-                n_neurons_down = 2 ** (self.__n_filter_init - i) # FIXME: min_n_filters rather than n_fitlers_init?
-                encoder = Dense(n_neurons_down, activation="relu")(encoder)
+                encoder = Dense(n_neurons, activation="relu")(encoder)
                 print(f"encoder.shape={encoder.shape} (Dense)")
             elif self._model_type == "LSTM":
                 pass
@@ -136,23 +140,28 @@ class Autoencoder:
         print(f"decoder.shape={decoder.shape} (Dense)")
         decoder = Reshape(self.__shape_hidden_layer)(decoder)
         print(f"decoder.shape={decoder.shape} (Reshape)")
+        n_filter = self.__n_filter_init
         for i in range(self.n_layers):
-            n_filter_down = 2 ** (self.__n_filter_init + self.n_layers - i - 1)
+            if i <= self.n_layers / 2:
+                n_filter += 1
+            else:
+                n_filter -= 1
+            n_neurons = 2 ** (self.__n_filter_init + i)
 
             if self._model_type == "CNN":
-                decoder = Conv1D(n_filter_down, self.kernel_sz, activation="relu", padding="same")(decoder)
+                decoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(decoder)
                 print(f"decoder.shape={decoder.shape} (Conv1D)")
                 decoder = UpSampling1D(self.stride_sz)(decoder)
                 print(f"decoder.shape={decoder.shape} (UpSampling1D)")
             elif self._model_type == "fullyCNN":
-                decoder = Conv1D(n_filter_down, self.kernel_sz, activation="relu", padding="same")(decoder)
+                decoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(decoder)
                 print(f"decoder.shape={decoder.shape} (Conv1D)")
-                decoder = Conv1DTranspose(n_filter_down, self.kernel_sz, strides=self.stride_sz, activation="relu", padding="same")(decoder)
+                decoder = Conv1DTranspose(n_neurons, self.kernel_sz, strides=self.stride_sz, activation="relu",
+                                          padding="same")(decoder)
                 print(f"decoder.shape={decoder.shape} (Conv1DTranspose)")
 
             elif self._model_type == "FCN":
-                n_neurons_up = 2 ** (self.__n_filter_init - self.n_layers + 1 + i) # FIXME:
-                decoder = Dense(n_neurons_up, activation="relu")(decoder)
+                decoder = Dense(n_neurons, activation="relu")(decoder)
                 print(f"decoder.shape={decoder.shape} (Dense)")
             elif self._model_type == "LSTM":
                 pass
@@ -180,15 +189,15 @@ class Autoencoder:
     def autoencoder(self):
         if self._autoencoder is None:
             self._autoencoder = self.build_autoencoder()
-            print("build new autoencoder model")  # FIXME: for debugging
+            print("build new autoencoder model")
         return self._autoencoder
-
 
     def fit(self, data_tf, epochs: int = 100) -> pd.DataFrame:
         model = self.autoencoder
         model.compile(optimizer="adam",
                       loss='mse',
-                      metrics=['accuracy'])
+                      # metrics=['accuracy']
+                      )
 
         callbacks = [EarlyStopping(monitor="val_loss",
                                    patience=self.__early_stopping_after_n_epochs,
@@ -210,7 +219,7 @@ class Autoencoder:
                             steps_per_epoch=self._steps_per_epoch,
                             callbacks=callbacks,
                             validation_split=0.2,
-                            shuffle=False,  # FIXME: shuffle data
+                            shuffle=True,
                             )
         dt = time() - t1
         print(f"Training took {dt: 0.4} seconds.")
@@ -226,13 +235,13 @@ if __name__ == "__main__":
     n_signals = 1000
 
     data = (np.random.random((n_signals, sig_len_max)) +
-            np.arange(sig_len_max) / (sig_len_max/4) +
+            np.arange(sig_len_max) / (sig_len_max / 4) +
             np.asarray(list(np.arange(sig_len_max / 8)) * 8).flatten()) / (sig_len_max / 8)
     print(f"data.shape={data.shape}")
 
     # TODO: make input length variable
 
-    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3, model_type="fullyCNN")
+    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3, model_type="CNN")
     auto.fit(data)
 
     sig = data[0, :]
