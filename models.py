@@ -99,30 +99,38 @@ class Autoencoder:
         if self._model_type == "FCN":
             encoder = Flatten()(encoder)
         encoder = Dropout(rate=0.1)(encoder)
-        print(f"encoder.shape={encoder.shape} (input)")
+        print(f"Layer -1: encoder.shape={encoder.shape} (input)")
+
         # hidden layers
-        n_filter = self.__n_filter_init
         for i in range(self.n_layers):
-            if i <= self.n_layers / 2:
-                n_filter += 1
+            # number of neurons / filter in this layer
+            if self._model_type == "FCN":
+                n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i - 1)
             else:
-                n_filter -= 1
-            n_neurons = 2 ** (self.__n_filter_init + i)
+                n_neurons = 2 ** (self.__n_filter_init + i)
 
             if self._model_type == "CNN":
+                shape_conv1d_in = encoder.shape
                 encoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(encoder)
-                print(f"encoder.shape={encoder.shape} (Conv1D)")
+                print(f"Layer {i}: encoder.shape={shape_conv1d_in} => {encoder.shape} (Conv1D)")
+
+                shape_conv1d_in = encoder.shape
                 encoder = MaxPooling1D(self.stride_sz, padding="same")(encoder)
-                print(f"encoder.shape={encoder.shape} (MaxPooling1D)")
+                print(f"Layer {i}: encoder.shape={shape_conv1d_in} => {encoder.shape} (MaxPooling1D)")
+
             elif self._model_type == "fullyCNN":
+                shape_conv1d_in = encoder.shape
                 encoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(encoder)
-                print(f"encoder.shape={encoder.shape} (Conv1D)")
+                print(f"Layer {i}: encoder.shape={shape_conv1d_in} => {encoder.shape} (Conv1D)")
+
+                shape_conv1d_in = encoder.shape
                 encoder = Conv1D(n_neurons, 1, strides=self.stride_sz, padding="same")(encoder)
-                print(f"encoder.shape={encoder.shape} (Conv1D stride)")
+                print(f"Layer {i}: encoder.shape={shape_conv1d_in} => {encoder.shape} (Conv1D stride)")
 
             elif self._model_type == "FCN":
                 encoder = Dense(n_neurons, activation="relu")(encoder)
-                print(f"encoder.shape={encoder.shape} (Dense)")
+                print(f"Layer {i}: encoder.shape={encoder.shape} (Dense)")
+
             elif self._model_type == "LSTM":
                 pass
             else:
@@ -133,9 +141,9 @@ class Autoencoder:
         self.__shape_hidden_layer = encoder.shape[1:]
         # output layer
         encoder = Flatten()(encoder)
-        print(f"encoder.shape={encoder.shape} (Flatten)")
+        print(f"Layer {i+1}: encoder.shape={encoder.shape} (Flatten)")
         encoder = Dense(self.compressed_dim, activation="relu")(encoder)
-        print(f"encoder.shape={encoder.shape} (Dense)")
+        print(f"Layer {i+1}: encoder.shape={encoder.shape} (Dense)")
 
         if build_model:
             encoder = Model(self._encoder_input, encoder)
@@ -143,7 +151,7 @@ class Autoencoder:
 
         return encoder
 
-    def get_decoder(self, encoder=None):
+    def build_decoder(self, encoder=None):
         # input layer
         if encoder is None:
             decoder_input = Input(shape=self.compressed_dim)
@@ -151,42 +159,55 @@ class Autoencoder:
             decoder_input = encoder
 
         decoder = Dense(np.prod(self.__shape_hidden_layer))(decoder_input)
-        print(f"decoder.shape={decoder.shape} (Dense)")
+        print(f"Layer -1: decoder.shape={decoder.shape} (Dense)")
         decoder = Reshape(self.__shape_hidden_layer)(decoder)
-        print(f"decoder.shape={decoder.shape} (Reshape)")
-        n_filter = self.__n_filter_init
+        print(f"Layer -1: decoder.shape={decoder.shape} (Reshape)")
+
         for i in range(self.n_layers):
-            if i <= self.n_layers / 2:
-                n_filter += 1
+            # number of neurons / filter in this layer
+            if self._model_type == "FCN":
+                n_neurons = 2 ** (self.__n_filter_init + i)
             else:
-                n_filter -= 1
-            n_neurons = 2 ** (self.__n_filter_init + i)
+                n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i - 2)
+            activation = "relu"
+
+            if i == self.n_layers - 1:
+                if self._model_type == "FCN":
+                    n_neurons = self._encoder_input.shape[1]
+                else:
+                    n_neurons = self.sig_dim
+
+                activation = "sigmoid"
 
             if self._model_type == "CNN":
-                decoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(decoder)
-                print(f"decoder.shape={decoder.shape} (Conv1D)")
+                shape_conv1d_in = decoder.shape
                 decoder = UpSampling1D(self.stride_sz)(decoder)
-                print(f"decoder.shape={decoder.shape} (UpSampling1D)")
-            elif self._model_type == "fullyCNN":
-                decoder = Conv1D(n_neurons, self.kernel_sz, activation="relu", padding="same")(decoder)
-                print(f"decoder.shape={decoder.shape} (Conv1D)")
-                decoder = Conv1DTranspose(n_neurons, self.kernel_sz, strides=self.stride_sz, activation="relu",
-                                          padding="same")(decoder)
-                print(f"decoder.shape={decoder.shape} (Conv1DTranspose)")
+                print(f"Layer {i}: decoder.shape={shape_conv1d_in} => {decoder.shape} (UpSampling1D)")
 
+                shape_conv1d_in = decoder.shape
+                decoder = Conv1D(n_neurons, self.kernel_sz, activation=activation, padding="same")(decoder)
+                print(f"Layer {i}: decoder.shape={shape_conv1d_in} => {decoder.shape} (Conv1D)")
+
+                # FIXME: Transposed convolution
+                # decoder = Conv1DTranspose(n_neurons, self.kernel_sz, strides=self.stride_sz,
+                #                           activation=activation, padding="same")(decoder)
+                # print(f"Layer {i}: decoder.shape={shape_conv1d_in} => {decoder.shape} (Conv1DTranspose)")
+            elif self._model_type == "fullyCNN":
+                shape_conv1d_in = decoder.shape
+                decoder = Conv1DTranspose(decoder.shape[-1], 1, strides=self.stride_sz,
+                                          activation=activation, padding="same")(decoder)
+                print(f"Layer {i}: decoder.shape={shape_conv1d_in} => {decoder.shape} (Conv1DTranspose)")
+
+                shape_conv1d_in = decoder.shape
+                decoder = Conv1D(n_neurons, self.kernel_sz, activation=activation, padding="same")(decoder)
+                print(f"Layer {i}: decoder.shape={shape_conv1d_in} => {decoder.shape} (Conv1D)")
             elif self._model_type == "FCN":
-                decoder = Dense(n_neurons, activation="relu")(decoder)
-                print(f"decoder.shape={decoder.shape} (Dense)")
+                decoder = Dense(n_neurons, activation=activation)(decoder)
+                print(f"Layer {i}: decoder.shape={decoder.shape} (Dense)")
             elif self._model_type == "LSTM":
                 pass
             else:
                 raise ValueError(f"Unknown model type '{self._model_type}'.")
-
-        if self._model_type == "CNN" or self._model_type == "fullyCNN":
-            decoder = Conv1D(self.sig_dim, self.kernel_sz, activation="sigmoid", padding="same")(decoder)
-        elif self._model_type == "FCN":
-            decoder = Dense(self._encoder_input.shape[1], activation="sigmoid")(decoder)
-        print(f"decoder.shape={decoder.shape} (output)")
 
         if encoder is None:
             decoder = Model(decoder_input, decoder)
@@ -195,7 +216,7 @@ class Autoencoder:
 
     def build_autoencoder(self):
         encoder = self.build_encoder(build_model=False)
-        decoder = self.get_decoder(encoder)
+        decoder = self.build_decoder(encoder)
         autoencoder = Model(self._encoder_input, decoder)
         return autoencoder
 
@@ -251,17 +272,27 @@ if __name__ == "__main__":
 
     data = (np.random.random((n_signals, sig_len_max)) +
             np.arange(sig_len_max) / (sig_len_max / 4) +
-            np.asarray(list(np.arange(sig_len_max / 8)) * 8).flatten()) / (sig_len_max / 8)
+            np.asarray(list(np.arange(sig_len_max / 8)) * 8).flatten()) / (sig_len_max / 8) / 1.2
     print(f"data.shape={data.shape}")
 
     # TODO: make input length variable
 
-    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3, model_type="CNN")
-    auto.fit(data)
+    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3, model_type="fullyCNN")
+
+    # print(f"================> # model parameter autoencoder: {count_model_parameters(auto.autoencoder)}")
+    print(f"================> # model parameter encoder: {count_model_parameters(auto.build_encoder())}")
+    print(f"================> # model parameter decoder: {count_model_parameters(auto.build_decoder())}")
+
+    auto.fit(data, epochs=500)
 
     sig = data[0, :]
     sig_prd = auto.autoencoder.predict(np.expand_dims(sig, 0))
 
-    plt.plot(sig, color="b")
-    plt.plot(sig_prd.flatten(), color="r")
-    plt.show()
+    fig, axs = plt.subplots(1, 2)
+    for i in range(2):
+        if i == 0:
+            axs[i].plot(sig, color="b")
+            axs[i].plot(sig_prd.flatten(), color="r")
+        elif i == 1:
+            axs[i].plot(sig_prd.flatten() - sig, color="k")
+    fig.show()
