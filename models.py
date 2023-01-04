@@ -104,10 +104,7 @@ class Autoencoder:
         # hidden layers
         for i in range(self.n_layers):
             # number of neurons / filter in this layer
-            if self._model_type == "FCN":
-                n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i - 1)
-            else:
-                n_neurons = 2 ** (self.__n_filter_init + i)
+            n_neurons = self._get_n_neurons_for_layer(i, encode=True)
 
             if self._model_type == "CNN":
                 shape_conv1d_in = encoder.shape
@@ -139,6 +136,7 @@ class Autoencoder:
             if i % 2:
                 encoder = Dropout(rate=0.1)(encoder)  # FIXME only for CNNs?
         self.__shape_hidden_layer = encoder.shape[1:]
+
         # output layer
         encoder = Flatten()(encoder)
         print(f"Layer {i+1}: encoder.shape={encoder.shape} (Flatten)")
@@ -150,6 +148,28 @@ class Autoencoder:
             # TODO load weights
 
         return encoder
+
+    def _get_n_neurons_for_layer(self, i_layer: int, encode: bool) -> int:
+        # number of neurons / filter in this layer
+        if encode:
+            n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i_layer - 1)
+            # if self._model_type == "FCN":
+            #     n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i_layer - 1)
+            # else:
+            #     n_neurons = 2 ** (self.__n_filter_init + i_layer)
+        else:
+            n_neurons = 2 ** (self.__n_filter_init + i_layer)
+            # if self._model_type == "FCN":
+            #     n_neurons = 2 ** (self.__n_filter_init + i_layer)
+            # else:
+            #     n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i_layer - 2)
+
+            if i_layer == self.n_layers - 1:
+                if self._model_type == "FCN":
+                    n_neurons = self._encoder_input.shape[1]
+                else:
+                    n_neurons = self.sig_dim
+        return n_neurons
 
     def build_decoder(self, encoder=None):
         # input layer
@@ -165,18 +185,10 @@ class Autoencoder:
 
         for i in range(self.n_layers):
             # number of neurons / filter in this layer
-            if self._model_type == "FCN":
-                n_neurons = 2 ** (self.__n_filter_init + i)
-            else:
-                n_neurons = 2 ** (self.n_layers + self.__n_filter_init - i - 2)
+            n_neurons = self._get_n_neurons_for_layer(i, encode=False)
+
             activation = "relu"
-
             if i == self.n_layers - 1:
-                if self._model_type == "FCN":
-                    n_neurons = self._encoder_input.shape[1]
-                else:
-                    n_neurons = self.sig_dim
-
                 activation = "sigmoid"
 
             if self._model_type == "CNN":
@@ -202,8 +214,14 @@ class Autoencoder:
                 decoder = Conv1D(n_neurons, self.kernel_sz, activation=activation, padding="same")(decoder)
                 print(f"Layer {i}: decoder.shape={shape_conv1d_in} => {decoder.shape} (Conv1D)")
             elif self._model_type == "FCN":
+                if i == self.n_layers - 1:
+                    n_neurons = self.sig_len * self.sig_dim
                 decoder = Dense(n_neurons, activation=activation)(decoder)
                 print(f"Layer {i}: decoder.shape={decoder.shape} (Dense)")
+
+                if i == self.n_layers - 1:
+                    decoder = Reshape((self.sig_len, self.sig_dim))(decoder)
+                    print(f"Layer {i}: decoder.shape={decoder.shape} (Reshape)")
             elif self._model_type == "LSTM":
                 pass
             else:
@@ -277,7 +295,7 @@ if __name__ == "__main__":
 
     # TODO: make input length variable
 
-    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3, model_type="fullyCNN")
+    auto = Autoencoder(sig_len=sig_len_max, sig_dim=sig_dimension, n_layers=3, model_type="FCN")
 
     # print(f"================> # model parameter autoencoder: {count_model_parameters(auto.autoencoder)}")
     print(f"================> # model parameter encoder: {count_model_parameters(auto.build_encoder())}")
